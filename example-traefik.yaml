@@ -1,0 +1,135 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: WARN
+
+api:
+  dashboard: true
+  insecure: true
+
+entryPoints:
+  http:
+    address: :80
+    http:
+      redirections:
+        entryPoint:
+          to: https
+          scheme: https
+          permanent: true
+  https:
+    address: :443
+    transport:
+      respondingTimeouts:
+        readTimeout: 600s
+        idleTimeout: 600s
+        writeTimeout: 600s
+    http:
+      tls: {}
+
+certificatesResolvers:
+  duckdnsresolver:
+    acme:
+      email: <insert_email_here>                                # Be sure to add your email here
+      storage: /etc/traefik/certs/acme-duckdns.json
+      caServer: "https://acme-v02.api.letsencrypt.org/directory"
+      dnsChallenge:
+        provider: duckdns
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+
+serversTransport:
+  insecureSkipVerify: true
+  forwardingTimeouts:
+    dialTimeout: 30s
+    responseHeaderTimeout: 0
+    idleConnTimeout: 180s
+
+providers:
+  file:
+    directory: /etc/traefik
+    watch: true
+
+http:
+  routers:
+    main_router:
+      rule: "Host(`example.duckdns.org`)"
+      service: pocketid_service
+      entryPoints:
+        - https
+      tls:
+        certResolver: "duckdnsresolver"
+        domains:
+          - main: "example.duckdns.org"
+            sans:
+              - "*.example.duckdns.org"
+              
+    pocketid_router:
+      rule: Host(`auth.example.duckdns.org`)
+      service: pocketid_service
+      priority: 100
+      entryPoints:
+       - https
+      tls:
+        certResolver: duckdnsresolver
+        
+    session_admin_router:
+      rule: Host(`auth.example.duckdns.org`) && (PathPrefix(`/admin-portal`) || PathPrefix(`/api/sessions`) || PathPrefix(`/api/stats`)) 
+      service: session_admin_service
+      entryPoints:
+        - https
+      priority: 250
+      middlewares:
+      - oauth2-auth
+      - authz-group-admin
+      tls:
+        certResolver: duckdnsresolver
+        
+    oauth2_id_callback_router:
+      rule: "Host(`auth.example.duckdns.org`) && PathPrefix(`/oauth2/`)"
+      entryPoints:
+        - https
+      priority: 260
+      service: oauth2_proxy_service
+      tls:
+        certResolver: duckdnsresolver
+        
+  middlewares:
+    oauth2-auth:
+      forwardAuth:
+        address: "http://oauth2-proxy:4180"
+        trustForwardHeader: true
+        maxResponseBodySize: 1048576
+        authResponseHeaders:
+          - X-Auth-Request-User
+          - X-Auth-Request-Email
+          - X-Auth-Request-Access-Token
+          - X-Auth-Request-Groups
+ 
+    authz-group-admin:
+      forwardAuth:
+        address: "http://authz:8080/auth?group=administrator"
+        maxResponseBodySize: 1048576
+        
+    authz-group-user:
+      forwardAuth:
+        address: "http://authz:8080/auth?group=user"
+        maxResponseBodySize: 1048576
+        
+  services:
+    pocketid_service:
+      loadBalancer:
+        servers:
+          - url: http://pocket-id:1411
+          
+    oauth2_proxy_service:
+      loadBalancer:
+        servers:
+          - url: http://oauth2-proxy:4180  
+                
+    session_admin_service:
+      loadBalancer:
+        servers:
+          - url: http://session-admin:8080
